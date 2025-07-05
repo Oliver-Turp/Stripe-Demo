@@ -81,15 +81,12 @@ body {
   color: #e74c3c;
   margin: 1rem 0;
   padding: 1rem;
-  background-color: hsl(214, 15%, 21%);
   border-radius: 6px;
 }
 
 .success {
   color: #27ae60;
-  margin-top: 1rem;
   padding: 1rem;
-  background-color: hsl(214, 15%, 21%);
   border-radius: 6px;
 }
 

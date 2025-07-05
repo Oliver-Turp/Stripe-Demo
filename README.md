@@ -1,12 +1,14 @@
 # Stripe Subscription Demo
 
-A simple Next.js demo showing Stripe subscriptions with feature entitlements. No user authentication - just email-based customer matching for demo purposes.
+A simple Next.js demo showing Stripe subscriptions with feature entitlements, coupons, and promotion codes. No user authentication - just email-based customer matching for demo purposes.
 
 ## 🎯 What This Does
 
-- Creates tiered subscription plans (Silver £3/month, Gold £5/month)
+- Creates tiered subscription plans (Core £3/month, Plus £5/month, Ultra £10/month)
 - Shows different features per tier using Stripe's entitlements system
-- Handles subscriptions via Stripe Checkout
+- Handles subscriptions via Stripe Checkout with coupon/promo code support
+- Demonstrates discount application with coupons and promotion codes
+- Immediate access suspension on payment failures with automatic restoration
 - Basic demo - customer identification by email only
 
 ## 🚀 Quick Setup
@@ -41,14 +43,16 @@ stripe listen --forward-to localhost:3000/api/webhooks/stripe
 ```
 4. Copy the webhook signing secret from the CLI output to your `.env` file
 
-### 5. Create Products & Features
+### 5. Create Products, Features & Discounts
 ```bash
-# Create features and products
-pnpm run create
+# Create everything at once (recommended)
+pnpm run create:all
 
-# Or create separately:
-pnpm run createf  # Create features first
-pnpm run createp  # Then create products
+# Or create individually:
+pnpm run create:feat   # Create features first
+pnpm run create:prod   # Then create products
+pnpm run create:coup   # Create coupons
+pnpm run create:promo  # Create promotion codes
 ```
 
 ### 6. Run the App
@@ -61,9 +65,11 @@ Visit [http://localhost:3000](http://localhost:3000)
 ## 🛠️ Available Scripts
 
 **Setup:**
-- `pnpm run create` - Create features and products
-- `pnpm run createf` - Create Stripe features only
-- `pnpm run createp` - Create Stripe products only
+- `pnpm run create:all` - Create features, products, coupons, and promotion codes
+- `pnpm run create:feat` - Create Stripe features only
+- `pnpm run create:prod` - Create Stripe products only
+- `pnpm run create:coup` - Create Stripe coupons only
+- `pnpm run create:promo` - Create Stripe promotion codes only
 
 **Development:**
 - `pnpm run dev` - Start development server
@@ -76,17 +82,17 @@ Visit [http://localhost:3000](http://localhost:3000)
 ## 💳 Test the Subscription Flow
 
 1. Enter any email address
-2. Choose Silver (£3/month) or Gold (£5/month)
-3. Use [any test card](https://docs.stripe.com/testing) like `4242 4242 4242 4242`
-4. Any future expiry date and any 3-digit CVC
+2. Choose Core (£3/month), Plus (£5/month), or Ultra (£10/month)
+3. Apply promotion codes if desired
+4. Use [any test card](https://docs.stripe.com/testing) like `4242 4242 4242 4242`
+5. Any future expiry date and any 3-digit CVC
 
-## 🔧 Subscription Tiers
+## 🚨 Payment Failure Handling
 
-**Silver Tier** - £3/month or £30/year
-- Premium Server Access, Extended Limits, Priority Support, Credit Shoutout
-
-**Gold Tier** - £5/month or £50/year
-- All Silver features + AI Integration, Translation Commands, Feature Suggestions
+- **Immediate lockout** on first payment failure
+- **Automatic restoration** when payment succeeds
+- **Suspended entitlements** preserved during suspension
+- **Multiple retry attempts** handled gracefully
 
 ## ⚠️ Important Notes
 
@@ -94,19 +100,41 @@ Visit [http://localhost:3000](http://localhost:3000)
 - **Test mode** - No real payments processed
 - **Local webhooks** - Must use Stripe CLI for local development
 - **Cleanup scripts** - Use `clean` for minor cleanup, `wipe` to reset everything
+- **Promotion codes** - Test various discount scenarios with provided codes
 
 ## 🐛 Common Issues
 
 1. **Webhooks not working**: Make sure Stripe CLI is running with `stripe listen`
-2. **"Feature not found"**: Run `pnpm run createf` first
-3. **Products missing**: Run `pnpm run createp` after creating features
-4. **Need fresh start**: Use `pnpm run wipe` then recreate everything
+2. **"Feature not found"**: Run `pnpm run create:feat` first
+3. **Products missing**: Run `pnpm run create:prod` after creating features
+4. **Coupons not working**: Run `pnpm run create:coup` and `pnpm run create:promo`
+5. **Need fresh start**: Use `pnpm run wipe` then `pnpm run create:all`
 
-## 📚 What You'll Learn
+## 🎯 API Endpoints
 
-- Stripe subscription setup with entitlements
-- Webhook handling for subscription events
-- Feature-based access control
-- Basic subscription management UI
+- `/api/stripe/create-subscription` - Create new subscription
+- `/api/stripe/products` - Fetch available products and pricing
+- `/api/stripe/verify-promo` - Verify promo code is allowed for user's email
+- `/api/stripe/verify-payment` - Verify payment status
+- `/api/stripe/verify-subscription` - Verify subscription status
+- `/api/stripe/webhooks` - Handle Stripe webhooks
 
-Perfect starting point for building real subscription apps!
+## 🧪 Testing Scenarios
+
+**Happy Path:**
+1. Subscribe with promotion code
+2. Verify discounted pricing
+3. Complete payment successfully
+4. Check feature access
+
+**Payment Failure:**
+1. Subscribe with failing card (`4000000000000002`)
+2. Verify immediate access suspension
+3. Update payment method
+4. Verify automatic access restoration
+
+**Discount Validation:**
+1. Try expired promotion codes
+2. Test usage limits
+3. Verify discount calculations
+4. Check recurring vs one-time discounts

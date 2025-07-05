@@ -4,11 +4,11 @@ import { getCustomerByEmail } from '@/lib/storage'
 
 export async function POST(request) {
   try {
-    const { priceId, planType, email, productName } = await request.json()
+    const { priceId, planType, email, productName, promoCodeId } = await request.json() // Add promoCodeId
 
     if (!priceId || !planType || !email) {
       return NextResponse.json(
-        { error: 'Missing required fields: priceId, planType, or email' }, 
+        { error: 'Missing required fields: priceId, planType, or email' },
         { status: 400 }
       )
     }
@@ -16,10 +16,10 @@ export async function POST(request) {
     // Check if customer already exists
     let customer
     const existingCustomer = await getCustomerByEmail(email)
-    
+
     if (existingCustomer && existingCustomer.stripeCustomerId) {
       customer = await stripe.customers.retrieve(existingCustomer.stripeCustomerId)
-      
+
       // Check for existing active subscriptions
       const activeSubscriptions = await stripe.subscriptions.list({
         customer: customer.id,
@@ -31,7 +31,7 @@ export async function POST(request) {
         const activeSubscription = activeSubscriptions.data[0]
         const currentPrice = await stripe.prices.retrieve(activeSubscription.items.data[0].price.id)
         const currentProduct = await stripe.products.retrieve(currentPrice.product)
-        
+
         return NextResponse.json({
           error: 'You already have an active subscription',
           details: {
@@ -58,16 +58,16 @@ export async function POST(request) {
 
       if (matchingIncomplete) {
         console.log(`🔄 Resuming existing incomplete subscription: ${matchingIncomplete.id}`)
-        
+
         // Get the latest invoice and payment intent
         const invoice = await stripe.invoices.retrieve(matchingIncomplete.latest_invoice, {
           expand: ['payment_intent']
         })
 
         // Check if the payment intent is still valid (not expired)
-        if (invoice.payment_intent && 
-            invoice.payment_intent.status === 'requires_payment_method') {
-          
+        if (invoice.payment_intent &&
+          invoice.payment_intent.status === 'requires_payment_method') {
+
           // Return the existing payment intent
           return NextResponse.json({
             subscriptionId: matchingIncomplete.id,
@@ -112,7 +112,8 @@ export async function POST(request) {
 
     // Create new subscription (only if no valid incomplete found)
     console.log(`🆕 Creating new subscription for customer ${customer.id}`)
-    const subscription = await stripe.subscriptions.create({
+
+    const subscriptionConfig = {
       customer: customer.id,
       items: [{ price: priceId }],
       payment_behavior: 'default_incomplete',
@@ -122,19 +123,94 @@ export async function POST(request) {
         plan: planType,
         product: productName || 'Unknown'
       }
-    })
+    }
+
+    // Add promo code if provided
+    if (promoCodeId) {
+      subscriptionConfig.promotion_code = promoCodeId
+      console.log(`🎫 Applying promo code: ${promoCodeId}`)
+    }
+
+    const subscription = await stripe.subscriptions.create(subscriptionConfig)
+
+    // 🆕 NEW: Handle free subscriptions (100% discount from promo codes)
+    if (subscription.status === 'active') {
+      // Subscription is already active (no payment required due to 100% discount)
+      console.log(`✅ Subscription activated immediately (100% discount): ${subscription.id}`)
+
+      return NextResponse.json({
+        subscriptionId: subscription.id,
+        clientSecret: null, // No payment needed
+        customerId: customer.id,
+        resumed: false,
+        freeSubscription: true, // Flag to indicate no payment needed
+        status: 'active'
+      })
+    }
+
+    // 🆕 NEW: Better handling of payment intent
+    const invoice = subscription.latest_invoice
+    let clientSecret = null
+
+    if (invoice && typeof invoice === 'object') {
+      // Invoice is expanded
+      if (invoice.payment_intent && typeof invoice.payment_intent === 'object') {
+        // Payment intent is expanded
+        clientSecret = invoice.payment_intent.client_secret
+      } else if (invoice.payment_intent && typeof invoice.payment_intent === 'string') {
+        // Payment intent is just an ID, need to retrieve it
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(invoice.payment_intent)
+          clientSecret = paymentIntent.client_secret
+        } catch (piError) {
+          console.error('Error retrieving payment intent:', piError)
+        }
+      }
+    } else if (invoice && typeof invoice === 'string') {
+      // Invoice is just an ID, need to retrieve it
+      try {
+        const fullInvoice = await stripe.invoices.retrieve(invoice, {
+          expand: ['payment_intent']
+        })
+        if (fullInvoice.payment_intent && typeof fullInvoice.payment_intent === 'object') {
+          clientSecret = fullInvoice.payment_intent.client_secret
+        }
+      } catch (invoiceError) {
+        console.error('Error retrieving invoice:', invoiceError)
+      }
+    }
+
+    if (!clientSecret) {
+      console.error('No client secret found for subscription:', subscription.id)
+      console.error('Subscription status:', subscription.status)
+      console.error('Invoice:', invoice)
+
+      return NextResponse.json({
+        error: 'Unable to create payment session. Please try again or contact support.',
+        details: {
+          subscriptionId: subscription.id,
+          subscriptionStatus: subscription.status,
+          hasInvoice: !!invoice,
+          debugInfo: {
+            invoiceType: typeof invoice,
+            invoiceId: typeof invoice === 'string' ? invoice : invoice?.id
+          }
+        }
+      }, { status: 500 })
+    }
 
     return NextResponse.json({
       subscriptionId: subscription.id,
       clientSecret: subscription.latest_invoice.payment_intent.client_secret,
       customerId: customer.id,
-      resumed: false
+      resumed: false,
+      freeSubscription: false
     })
 
   } catch (error) {
     console.error('Subscription creation error:', error)
     return NextResponse.json(
-      { error: error.message }, 
+      { error: error.message },
       { status: 500 }
     )
   }

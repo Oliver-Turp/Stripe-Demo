@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe-server'
-import { saveCustomer, saveSubscription, savePayment, saveCustomerEntitlements } from '@/lib/storage'
+import { saveCustomer, saveSubscription, savePayment, saveCustomerEntitlements, suspendCustomerEntitlements } from '@/lib/storage'
 
 export async function POST(request) {
   const body = await request.text()
@@ -66,6 +66,20 @@ export async function POST(request) {
         const invoiceSucceeded = event.data.object
         console.log('Invoice payment succeeded:', invoiceSucceeded.id)
 
+        // 🔄 RESTORE ACCESS: If this was a subscription invoice, restore access
+        if (invoiceSucceeded.subscription && invoiceSucceeded.customer) {
+          console.log(`✅ Payment succeeded - restoring access for customer: ${invoiceSucceeded.customer}`)
+
+          // Get the subscription to check if it was previously past_due
+          const subscription = await stripe.subscriptions.retrieve(invoiceSucceeded.subscription)
+
+          if (subscription.status === 'active') {
+            console.log(`🔓 Restoring entitlements for customer: ${invoiceSucceeded.customer}`)
+            // The entitlements.active_entitlement_summary.updated webhook will handle this automatically
+            // But you could also manually restore access here if needed
+          }
+        }
+
         // 🧹 CLEANUP: If this is a subscription invoice, clean up other incomplete subscriptions
         const subscriptionId = invoiceSucceeded.parent?.subscription_details?.subscription
         if (subscriptionId && invoiceSucceeded.customer) {
@@ -111,9 +125,64 @@ export async function POST(request) {
         }
         break
 
+      // 🚨 NEW: Handle payment failures - IMMEDIATE LOCKOUT
       case 'invoice.payment_failed':
         const invoiceFailed = event.data.object
-        console.log('Invoice payment failed:', invoiceFailed.id)
+        console.log('🚨 Invoice payment failed:', invoiceFailed.id)
+
+        // 🔍 DEBUG: Log the invoice object to see what we're working with
+        console.log('🔍 Invoice details:', {
+          id: invoiceFailed.id,
+          customer: invoiceFailed.customer,
+          subscription: invoiceFailed.subscription,
+          billing_reason: invoiceFailed.billing_reason,
+          amount_due: invoiceFailed.amount_due,
+          attempt_count: invoiceFailed.attempt_count
+        })
+
+        // Check if this is a subscription invoice (multiple ways to detect)
+        const isSubscriptionInvoice = invoiceFailed.subscription ||
+          invoiceFailed.billing_reason === 'subscription_create' ||
+          invoiceFailed.billing_reason === 'subscription_cycle' ||
+          invoiceFailed.billing_reason === 'subscription_update'
+
+        // Check if this is a subscription invoice
+        if (isSubscriptionInvoice && invoiceFailed.customer) {
+          console.log(`🔒 Payment failed for subscription invoice - suspending access`)
+          console.log(`📋 Billing reason: ${invoiceFailed.billing_reason}`)
+
+          try {
+            // Get subscription details
+            const customer = await stripe.customers.retrieve(invoiceFailed.customer)
+
+            console.log(`🚨 Suspending access for customer: ${customer.email} (${customer.id})`)
+            console.log(`💰 Failed amount: £${(invoiceFailed.amount_due / 100).toFixed(2)}`)
+            console.log(`📅 Attempt: ${invoiceFailed.attempt_count}`)
+
+            // Suspend customer entitlements immediately
+            await suspendCustomerEntitlements(invoiceFailed.customer, {
+              reason: 'payment_failed',
+              failedInvoiceId: invoiceFailed.id,
+              subscriptionId: invoiceFailed.subscription,
+              billingReason: invoiceFailed.billing_reason,
+              suspendedAt: new Date().toISOString(),
+              attemptCount: invoiceFailed.attempt_count,
+              amountDue: invoiceFailed.amount_due
+            })
+
+            console.log(`🔒 Access suspended for customer ${customer.email}`)
+
+          } catch (suspendError) {
+            console.error('Error suspending customer access:', suspendError)
+            // Don't fail the webhook if suspension fails
+          }
+        } else {
+          console.log('🔍 Not a subscription invoice or missing customer:', {
+            hasSubscription: !!invoiceFailed.subscription,
+            hasCustomer: !!invoiceFailed.customer,
+            billingReason: invoiceFailed.billing_reason
+          })
+        }
         break
 
       case 'invoice.upcoming':
@@ -146,32 +215,28 @@ export async function POST(request) {
 
       case 'customer.subscription.updated':
         const updatedSubscription = event.data.object
-        // Check if this was a plan change (price change)
         const previousAttributes = event.data.previous_attributes
-        const wasScheduleChange = previousAttributes?.items?.data?.[0]?.price?.id
 
-        if (wasScheduleChange) {
-          console.log(`📋 Plan change detected for subscription: ${updatedSubscription.id}`)
-          console.log(`Old price: ${previousAttributes.items.data[0].price.id}`)
-          console.log(`New price: ${updatedSubscription.items.data[0].price.id}`)
+        // 🔄 Check if subscription status changed from past_due to active (payment recovered)
+        if (updatedSubscription.status === 'active' &&
+          previousAttributes?.status === 'past_due') {
+          console.log(`🎉 Subscription recovered from past_due: ${updatedSubscription.id}`)
+          console.log(`🔓 Customer should regain access: ${updatedSubscription.customer}`)
+          // The entitlements webhook will handle restoring access automatically
         }
 
-        // Check if subscription was paused/resumed
-        if (previousAttributes?.pause_collection !== undefined) {
-          if (updatedSubscription.pause_collection) {
-            console.log(`⏸️ Subscription paused: ${updatedSubscription.id}`)
-          } else {
-            console.log(`▶️ Subscription resumed: ${updatedSubscription.id}`)
-          }
+        // Check if subscription became past_due
+        if (updatedSubscription.status === 'past_due' &&
+          previousAttributes?.status !== 'past_due') {
+          console.log(`🚨 Subscription became past due: ${updatedSubscription.id}`)
+          console.log(`🔒 Customer access should be suspended: ${updatedSubscription.customer}`)
+          // Access should already be suspended by invoice.payment_failed webhook
         }
 
-        // Check if cancellation was scheduled/unscheduled
-        if (previousAttributes?.cancel_at_period_end !== undefined) {
-          if (updatedSubscription.cancel_at_period_end) {
-            console.log(`🗓️ Subscription scheduled for cancellation: ${updatedSubscription.id}`)
-          } else {
-            console.log(`🔄 Subscription cancellation unscheduled: ${updatedSubscription.id}`)
-          }
+        // Check for other status changes
+        if (previousAttributes?.status &&
+          previousAttributes.status !== updatedSubscription.status) {
+          console.log(`📊 Subscription status changed: ${previousAttributes.status} → ${updatedSubscription.status}`)
         }
 
         await saveSubscription(updatedSubscription.id, {
@@ -241,10 +306,10 @@ export async function POST(request) {
 async function handleEntitlementSummaryUpdated(entitlementSummary) {
   try {
     console.log('🎯 Processing entitlement summary update for customer:', entitlementSummary.customer)
-    
+
     // Get the full customer data
     const customer = await stripe.customers.retrieve(entitlementSummary.customer)
-    
+
     // Save/update customer info (without entitlements first)
     await saveCustomer(customer.id, {
       stripeCustomerId: customer.id,
@@ -265,7 +330,7 @@ async function handleEntitlementSummaryUpdated(entitlementSummary) {
       // Get feature details since entitlement.feature is just an ID
       let featureName = 'Unknown Feature'
       let featureMetadata = {}
-      
+
       try {
         // Fetch the full feature object
         const feature = await stripe.entitlements.features.retrieve(entitlement.feature)
@@ -277,9 +342,9 @@ async function handleEntitlementSummaryUpdated(entitlementSummary) {
         // Use lookup_key from entitlement as fallback
         featureName = entitlement.lookup_key || 'Unknown Feature'
       }
-      
+
       console.log(`  📋 Processing entitlement: ${featureName} (${entitlement.lookup_key})`)
-      
+
       // Add to customer entitlements object
       customerEntitlements[entitlement.id] = {
         stripeEntitlementId: entitlement.id,
@@ -292,15 +357,15 @@ async function handleEntitlementSummaryUpdated(entitlementSummary) {
         metadata: featureMetadata,
         updatedAt: new Date().toISOString()
       }
-      
+
       console.log(`  ✅ Prepared entitlement: ${featureName}`)
     }
 
     // Save all entitlements at once (overwrites existing)
     await saveCustomerEntitlements(customer.id, customerEntitlements)
-    
+
     console.log(`✅ Updated ${entitlements.length} entitlements for customer ${customer.email}`)
-    
+
   } catch (error) {
     console.error('Error handling entitlement summary update:', error)
     throw error

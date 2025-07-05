@@ -16,6 +16,13 @@ export default function CheckoutPage() {
   const [email, setEmail] = useState('')
   const [existingSubscription, setExistingSubscription] = useState(null)
 
+  // NEW: Promo code state
+  const [promoCode, setPromoCode] = useState("")
+  const [promoValidation, setPromoValidation] = useState(null)
+  const [promoMessage, setPromoMessage] = useState("")
+  const [validatedPromoCodeId, setValidatedPromoCodeId] = useState(null)
+  const [validatedCoupon, setValidatedCoupon] = useState(null)
+
   // Fetch products on component mount
   useEffect(() => {
     fetchProducts()
@@ -52,6 +59,88 @@ export default function CheckoutPage() {
     }
   }
 
+  // NEW: Promo code validation function
+  const validatePromoCode = async () => {
+    if (!promoCode.trim()) {
+      setPromoValidation(null)
+      setPromoMessage('')
+      setValidatedPromoCodeId(null)
+      setValidatedCoupon(null) // 🆕 NEW: Clear coupon info
+      return
+    }
+
+    if (!email) {
+      setPromoValidation('invalid')
+      setPromoMessage('Please enter your email first')
+      return
+    }
+
+    setPromoValidation('loading')
+    setPromoMessage('Validating...')
+
+    try {
+      const response = await fetch('/api/stripe/validate-promo', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          promoCode: promoCode.trim(),
+          email: email
+        })
+      })
+
+      const result = await response.json()
+
+      if (result.valid) {
+        setPromoValidation('valid')
+        setPromoMessage(result.message)
+        setValidatedPromoCodeId(result.promoCodeId)
+        setValidatedCoupon(result.coupon) // 🆕 NEW: Store coupon info
+      } else {
+        setPromoValidation('invalid')
+        setPromoMessage(result.error)
+        setValidatedPromoCodeId(null)
+        setValidatedCoupon(null) // 🆕 NEW: Clear coupon info
+      }
+    } catch (error) {
+      setPromoValidation('invalid')
+      setPromoMessage('Failed to validate promo code')
+      setValidatedPromoCodeId(null)
+      setValidatedCoupon(null) // 🆕 NEW: Clear coupon info
+    }
+  }
+
+  // 🆕 NEW: Add function to calculate discounted price
+  const calculateDiscountedPrice = (originalAmount) => {
+    if (!validatedCoupon) return originalAmount
+
+    if (validatedCoupon.percent_off) {
+      // Percentage discount
+      const discountAmount = Math.round(originalAmount * (validatedCoupon.percent_off / 100))
+      return originalAmount - discountAmount
+    } else if (validatedCoupon.amount_off) {
+      // Fixed amount discount
+      const discountedPrice = originalAmount - validatedCoupon.amount_off
+      return Math.max(0, discountedPrice) // Don't go below 0
+    }
+
+    return originalAmount
+  }
+
+  // 🆕 NEW: Add function to get discount amount for display
+  const getDiscountAmount = (originalAmount) => {
+    if (!validatedCoupon) return 0
+
+    if (validatedCoupon.percent_off) {
+      return Math.round(originalAmount * (validatedCoupon.percent_off / 100))
+    } else if (validatedCoupon.amount_off) {
+      return Math.min(validatedCoupon.amount_off, originalAmount)
+    }
+
+    return 0
+  }
+
   const handleCreateSubscription = async () => {
     if (!email) {
       setError('Please enter your email address')
@@ -84,7 +173,8 @@ export default function CheckoutPage() {
           priceId: selectedPrice.id,
           planType: `${selectedProduct}_${selectedInterval}`,
           email: email,
-          productName: product.name
+          productName: product.name,
+          promoCodeId: validatedPromoCodeId
         }),
       })
 
@@ -97,6 +187,13 @@ export default function CheckoutPage() {
         } else {
           throw new Error(data.error || 'Failed to create subscription')
         }
+        return
+      }
+
+      if (data.freeSubscription) {
+        console.log('🎉 Free subscription activated!')
+        // Redirect to success page with subscription info
+        window.location.href = `/success?subscription_id=${data.subscriptionId}&free=true`
         return
       }
 
@@ -275,6 +372,77 @@ export default function CheckoutPage() {
           </div>
         )}
 
+        {/* Promo Code Input */}
+        {!clientSecret && (
+          <div style={{ marginBottom: "2rem" }}>
+            <label
+              htmlFor="promo-code"
+              style={{
+                display: "block",
+                marginBottom: "0.5rem",
+                fontWeight: "bold",
+              }}
+            >
+              Promo Code (Optional)
+            </label>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                type="text"
+                id="promo-code"
+                value={promoCode}
+                onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                onBlur={validatePromoCode}
+                placeholder="Enter promo code"
+                style={{
+                  flex: 1,
+                  padding: "0.75rem",
+                  border: `2px solid ${promoValidation === "valid"
+                    ? "#22c55e"
+                    : promoValidation === "invalid"
+                      ? "#ef4444"
+                      : "rgb(221, 221, 221)"
+                    }`,
+                  borderRadius: "4px",
+                  fontSize: "1rem",
+                  backgroundColor: "hsl(214, 15%, 15%)",
+                  color: "white",
+                }}
+              />
+              <button
+                type="button"
+                onClick={validatePromoCode}
+                disabled={promoValidation === "loading"}
+                style={{
+                  padding: "0.75rem 1rem",
+                  backgroundColor: "#3b82f6",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "4px",
+                  cursor:
+                    promoValidation === "loading" ? "not-allowed" : "pointer",
+                }}
+              >
+                {promoValidation === "loading" ? "..." : "Check"}
+              </button>
+            </div>
+            {promoMessage && (
+              <div
+                style={{
+                  marginTop: "0.5rem",
+                  padding: "0.5rem",
+                  borderRadius: "4px",
+                  fontSize: "0.9rem",
+                  backgroundColor:
+                    promoValidation === "valid" ? "#dcfce7" : "#fef2f2",
+                  color: promoValidation === "valid" ? "#166534" : "#dc2626",
+                }}
+              >
+                {promoValidation === "valid" ? "✅" : "❌"} {promoMessage}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Existing Subscription Warning */}
         {existingSubscription && (
           <div style={{
@@ -298,7 +466,7 @@ export default function CheckoutPage() {
 
         {/* Product Selection */}
         <div className="product-selector" style={{ marginBottom: '2rem', marginTop: '1rem' }}>
-          <h3 style={{marginBottom: '0.5rem'}}>Select Plan</h3>
+          <h3 style={{ marginBottom: '0.5rem' }}>Select Plan</h3>
           {products.map((product) => (
             <div
               key={product.id}
@@ -333,15 +501,15 @@ export default function CheckoutPage() {
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1 }}>
-                  <h4 style={{ margin: '0 0 0.5rem 0', color: '#FFFFFF' }}>{product.name}</h4> {/* Changed from #333 */}
-                  <p style={{ color: '#B0B0B0', marginBottom: '1rem', fontSize: '0.9rem' }}> {/* Changed from #666 */}
+                  <h4 style={{ margin: '0 0 0.5rem 0', color: '#FFFFFF' }}>{product.name}</h4>
+                  <p style={{ color: '#B0B0B0', marginBottom: '1rem', fontSize: '0.9rem' }}>
                     {product.description}
                   </p>
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                     {product.features.map((feature, index) => (
                       <li key={index} style={{
                         padding: '0.25rem 0',
-                        color: '#D0D0D0', // Changed from #555
+                        color: '#D0D0D0',
                         fontSize: '0.9rem'
                       }}>
                         <span style={{ color: '#22c55e', marginRight: '0.5rem' }}>✓</span>
@@ -351,11 +519,28 @@ export default function CheckoutPage() {
                   </ul>
                 </div>
                 <div style={{ textAlign: 'right', marginLeft: '1rem' }}>
-                  <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#FFFFFF' }}> {/* Changed from #333 */}
-                    {product.prices[selectedInterval] ?
-                      formatPrice(product.prices[selectedInterval].amount) : 'N/A'}
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: '#B0B0B0' }}> {/* Changed from #666 */}
+                  {product.prices[selectedInterval] && validatedCoupon ? (
+                    // Show discounted price
+                    <div>
+                      <div style={{
+                        fontSize: '1rem',
+                        color: '#B0B0B0',
+                        textDecoration: 'line-through'
+                      }}>
+                        {formatPrice(product.prices[selectedInterval].amount)}
+                      </div>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#22c55e' }}>
+                        {formatPrice(calculateDiscountedPrice(product.prices[selectedInterval].amount))}
+                      </div>
+                    </div>
+                  ) : (
+                    // Show regular price
+                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#FFFFFF' }}>
+                      {product.prices[selectedInterval] ?
+                        formatPrice(product.prices[selectedInterval].amount) : 'N/A'}
+                    </div>
+                  )}
+                  <div style={{ fontSize: '0.8rem', color: '#B0B0B0' }}>
                     per {selectedInterval === 'monthly' ? 'month' : 'year'}
                   </div>
                 </div>
@@ -367,7 +552,7 @@ export default function CheckoutPage() {
         {/* Billing Interval Selection */}
         {selectedProductData && (
           <div className="interval-selector" style={{ marginBottom: '2rem' }}>
-            <h3 style={{marginBottom: '0.5rem'}}>Billing Frequency</h3>
+            <h3 style={{ marginBottom: '0.5rem' }}>Billing Frequency</h3>
             <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
               {selectedProductData.prices.monthly && (
                 <div
@@ -385,11 +570,26 @@ export default function CheckoutPage() {
                     textAlign: 'center'
                   }}
                 >
-                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#FFFFFF' }}>Monthly</div> {/* Added color */}
-                  <div style={{ fontSize: '1.2rem', color: '#FFFFFF' }}> {/* Changed from #333 */}
-                    {formatPrice(selectedProductData.prices.monthly.amount)}
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: '#B0B0B0' }}>per month</div> {/* Changed from #666 */}
+                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#FFFFFF' }}>Monthly</div>
+                  {validatedCoupon ? (
+                    <div>
+                      <div style={{
+                        fontSize: '0.9rem',
+                        color: '#B0B0B0',
+                        textDecoration: 'line-through'
+                      }}>
+                        {formatPrice(selectedProductData.prices.monthly.amount)}
+                      </div>
+                      <div style={{ fontSize: '1.2rem', color: '#22c55e' }}>
+                        {formatPrice(calculateDiscountedPrice(selectedProductData.prices.monthly.amount))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '1.2rem', color: '#FFFFFF' }}>
+                      {formatPrice(selectedProductData.prices.monthly.amount)}
+                    </div>
+                  )}
+                  <div style={{ fontSize: '0.8rem', color: '#B0B0B0' }}>per month</div>
                 </div>
               )}
 
@@ -425,11 +625,26 @@ export default function CheckoutPage() {
                       SAVE {getYearlySavings(selectedProductData)}
                     </div>
                   )}
-                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#FFFFFF' }}>Yearly</div> {/* Added color */}
-                  <div style={{ fontSize: '1.2rem', color: '#FFFFFF' }}> {/* Changed from #333 */}
-                    {formatPrice(selectedProductData.prices.yearly.amount)}
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: '#B0B0B0' }}>per year</div> {/* Changed from #666 */}
+                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#FFFFFF' }}>Yearly</div>
+                  {validatedCoupon ? (
+                    <div>
+                      <div style={{
+                        fontSize: '0.9rem',
+                        color: '#B0B0B0',
+                        textDecoration: 'line-through'
+                      }}>
+                        {formatPrice(selectedProductData.prices.yearly.amount)}
+                      </div>
+                      <div style={{ fontSize: '1.2rem', color: '#22c55e' }}>
+                        {formatPrice(calculateDiscountedPrice(selectedProductData.prices.yearly.amount))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '1.2rem', color: '#FFFFFF' }}>
+                      {formatPrice(selectedProductData.prices.yearly.amount)}
+                    </div>
+                  )}
+                  <div style={{ fontSize: '0.8rem', color: '#B0B0B0' }}>per year</div>
                 </div>
               )}
             </div>
@@ -443,17 +658,54 @@ export default function CheckoutPage() {
             padding: '1rem',
             borderRadius: '8px',
             marginBottom: '2rem',
-            border: '1px solid rgb(221, 221, 221)' // Changed border color
+            border: '1px solid rgb(221, 221, 221)'
           }}>
-            <h4 style={{ margin: '0 0 0.5rem 0', color: '#FFFFFF' }}>Order Summary</h4> {/* Added color */}
+            <h4 style={{ margin: '0 0 0.5rem 0', color: '#FFFFFF' }}>Order Summary</h4>
+
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-              <span style={{ color: '#D0D0D0' }}>{selectedProductData.name} - {selectedInterval === 'monthly' ? 'Monthly' : 'Yearly'}</span> {/* Added color */}
-              <span style={{ fontWeight: 'bold', color: '#FFFFFF' }}> {/* Added color */}
+              <span style={{ color: '#D0D0D0' }}>
+                {selectedProductData.name} - {selectedInterval === 'monthly' ? 'Monthly' : 'Yearly'}
+              </span>
+              <span style={{
+                fontWeight: 'bold',
+                color: validatedCoupon ? '#B0B0B0' : '#FFFFFF',
+                textDecoration: validatedCoupon ? 'line-through' : 'none'
+              }}>
                 {formatPrice(selectedProductData.prices[selectedInterval].amount)}
               </span>
             </div>
+
+            {/* Show discount if applied */}
+            {validatedCoupon && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ color: '#22c55e' }}>
+                  Discount ({validatedCoupon.percent_off ? `${validatedCoupon.percent_off}%` : formatPrice(validatedCoupon.amount_off)})
+                </span>
+                <span style={{ fontWeight: 'bold', color: '#22c55e' }}>
+                  -{formatPrice(getDiscountAmount(selectedProductData.prices[selectedInterval].amount))}
+                </span>
+              </div>
+            )}
+
+            {/* Show final total */}
+            {validatedCoupon && (
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginTop: '0.5rem',
+                paddingTop: '0.5rem',
+                borderTop: '1px solid #444',
+                fontSize: '1.1rem'
+              }}>
+                <span style={{ color: '#FFFFFF', fontWeight: 'bold' }}>Total</span>
+                <span style={{ fontWeight: 'bold', color: '#22c55e' }}>
+                  {formatPrice(calculateDiscountedPrice(selectedProductData.prices[selectedInterval].amount))}
+                </span>
+              </div>
+            )}
+
             {selectedInterval === 'yearly' && selectedProductData.prices.monthly && (
-              <div style={{ fontSize: '0.8rem', color: '#22c55e' }}>
+              <div style={{ fontSize: '0.8rem', color: '#22c55e', marginTop: '0.5rem' }}>
                 You save {getYearlySavings(selectedProductData)} compared to monthly billing
               </div>
             )}

@@ -18,7 +18,6 @@ async function cancelStripeTests() {
       status: 'incomplete',
       limit: 100,
     });
-    console.log(`Found ${subscriptions.data.length} incomplete subscriptions`);
     if (subscriptions.data.length > 0) {
       for (const subscription of subscriptions.data) {
         await stripe.subscriptions.cancel(subscription.id);
@@ -33,7 +32,6 @@ async function cancelStripeTests() {
       status: 'open',
       limit: 100,
     });
-    console.log(`Found ${invoices.data.length} unpaid invoices`);
     if (invoices.data.length > 0) {
       for (const invoice of invoices.data) {
         await stripe.invoices.voidInvoice(invoice.id);
@@ -50,7 +48,6 @@ async function cancelStripeTests() {
       pi => pi.status === 'requires_payment_method'
     );
 
-    console.log(`Found ${incompletePaymentIntents.length} incomplete payments`);
     if (incompletePaymentIntents.length > 0) {
       for (const paymentIntent of incompletePaymentIntents) {
         await stripe.paymentIntents.cancel(paymentIntent.id);

@@ -12,6 +12,8 @@ export default function SuccessPage() {
   useEffect(() => {
     const paymentIntentId = searchParams.get('payment_intent')
     const paymentIntentClientSecret = searchParams.get('payment_intent_client_secret')
+    const subscriptionId = searchParams.get('subscription_id')
+    const isFree = searchParams.get('free') === 'true'
 
     if (paymentIntentId && paymentIntentClientSecret) {
       // Verify the payment status
@@ -30,6 +32,23 @@ export default function SuccessPage() {
           setStatus('error')
           setMessage('Failed to verify payment. Please contact support.')
         })
+    } else if (subscriptionId && isFree) {
+      // Verify the subscription status
+      fetch(`/api/stripe/verify-subscription?subscription_id=${subscriptionId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.status === 'active') {
+            setStatus('success')
+            setMessage('Your free subscription has been successfully activated!')
+          } else {
+            setStatus('error')
+            setMessage(`Subscription verification failed with status: ${data.status}. Please contact support.`)
+          }
+        })
+        .catch(() => {
+          setStatus('error')
+          setMessage('Failed to verify subscription. Please contact support.')
+        })
     } else {
       setStatus('error')
       setMessage('Invalid payment confirmation.')
@@ -45,7 +64,7 @@ export default function SuccessPage() {
             <p>Please wait while we confirm your subscription.</p>
           </div>
         )}
-        
+
         {status === 'success' && (
           <div className="success">
             <h1>Welcome!</h1>
@@ -57,7 +76,7 @@ export default function SuccessPage() {
             </div>
           </div>
         )}
-        
+
         {status === 'error' && (
           <div className="error">
             <h1>Payment Error</h1>

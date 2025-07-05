@@ -10,9 +10,11 @@
     "lint": "next lint",
     "clean": "node ./scripts/clean.mjs",
     "wipe": "node ./scripts/wipe.mjs",
-    "createf": "node ./scripts/create-features.mjs",
-    "createp": "node ./scripts/create-products.mjs",
-    "create": "node ./scripts/create-features.mjs && node ./scripts/create-products.mjs"
+    "create:feat": "node ./scripts/create-features.mjs",
+    "create:prod": "node ./scripts/create-products.mjs",
+    "create:coup": "node ./scripts/create-coupons.mjs",
+    "create:promo": "node ./scripts/create-promos.mjs",
+    "create:all": "node ./scripts/create-features.mjs && node ./scripts/create-products.mjs && node ./scripts/create-coupons.mjs && node ./scripts/create-promos.mjs"
   },
   "keywords": [],
   "author": "",

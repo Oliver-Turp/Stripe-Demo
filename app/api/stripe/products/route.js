@@ -85,10 +85,10 @@ export async function GET() {
       return priorityA - priorityB
     })
 
-    console.log(`✅ Returning ${productsWithPrices.length} products`)
-    productsWithPrices.forEach(product => {
-      console.log(`  - ${product.name}: ${product.features.length} features`)
-    })
+    // console.log(`✅ Returning ${productsWithPrices.length} products`)
+    // productsWithPrices.forEach(product => {
+    //   console.log(`  - ${product.name}: ${product.features.length} features`)
+    // })
 
     return NextResponse.json({ products: productsWithPrices })
 

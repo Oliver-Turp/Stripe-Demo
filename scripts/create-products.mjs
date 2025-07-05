@@ -80,21 +80,44 @@ const PRODUCTS_CONFIG = [
 
 const currency = 'gbp'
 
-// 🆕 Helper function to get feature ID from lookup_key
+// Helper function to get feature ID from lookup_key
 async function getFeatureIdByLookupKey(lookupKey) {
   try {
     const features = await stripe.entitlements.features.list({
       lookup_key: lookupKey,
-      limit: 1
+      limit: 10 // Get more in case there are archived ones
     })
 
-    if (features.data.length === 0) {
-      throw new Error(`Feature with lookup_key '${lookupKey}' not found`)
+    // Find an ACTIVE feature with this lookup_key
+    const activeFeature = features.data.find(feature => feature.active === true)
+    
+    if (!activeFeature) {
+      throw new Error(`Active feature with lookup_key '${lookupKey}' not found`)
     }
 
-    return features.data[0].id
+    return activeFeature.id
   } catch (error) {
-    throw new Error(`Failed to find feature '${lookupKey}': ${error.message}`)
+    throw new Error(`Failed to find active feature '${lookupKey}': ${error.message}`)
+  }
+}
+
+// Helper function to check if a product with similar name/tier already exists
+async function findExistingActiveProduct(productConfig) {
+  try {
+    const products = await stripe.products.list({
+      active: true,
+      limit: 100
+    })
+
+    // Look for a product with the same tier in metadata
+    const existingProduct = products.data.find(product => 
+      product.metadata?.tier === productConfig.metadata.tier
+    )
+
+    return existingProduct || null
+  } catch (error) {
+    console.warn('Could not search for existing products:', error.message)
+    return null
   }
 }
 
@@ -103,158 +126,170 @@ async function createProducts() {
     console.log(`🚀 Creating ${PRODUCTS_CONFIG.length} products with pricing and features...`)
 
     const createdProducts = []
+    const skippedProducts = []
 
     for (const productConfig of PRODUCTS_CONFIG) {
-      console.log(`\n📦 Creating ${productConfig.name}...`)
+      console.log(`\n🔍 Checking product: ${productConfig.name} (${productConfig.metadata.tier})`)
 
-      // 🔍 DEBUG: Log what we're about to send
+      // Check if a similar active product already exists
+      const existingProduct = await findExistingActiveProduct(productConfig)
+      
+      if (existingProduct) {
+        console.log(`⚠️  Active product with tier '${productConfig.metadata.tier}' already exists - skipping`)
+        console.log(`    Existing: ${existingProduct.name} (${existingProduct.id})`)
+        
+        skippedProducts.push({
+          config: productConfig,
+          existing: existingProduct
+        })
+        continue
+      }
+
+      // Create the product (let Stripe generate the ID)
       const productPayload = {
+        // Remove custom ID - let Stripe generate it
         name: productConfig.name,
         description: productConfig.description,
         metadata: {
-          // Keep the old features string for backward compatibility
           features: productConfig.features.join(', '),
-          ...productConfig.metadata
+          ...productConfig.metadata,
         }
       }
 
-      console.log('🔍 Product payload:', JSON.stringify(productPayload, null, 2))
+      console.log(`📦 Creating product: ${productConfig.name}...`)
+      
+      try {
+        const product = await stripe.products.create(productPayload)
+        console.log(`✅ Created product: ${product.id}`)
 
-      // Create the product
-      console.log('📡 Sending product creation request...')
-      const product = await stripe.products.create(productPayload)
+        // Attach features to the product
+        console.log(`\n🔗 Attaching ${productConfig.features.length} features to ${product.name}...`)
+        
+        for (const featureLookupKey of productConfig.features) {
+          try {
+            console.log(`  📎 Attaching feature: ${featureLookupKey}`)
+            const featureId = await getFeatureIdByLookupKey(featureLookupKey)
+            console.log(`  🔍 Found feature ID: ${featureId}`)
 
-      console.log(`✅ Created product: ${product.id}`)
-      console.log('🔍 Product response:', JSON.stringify({
-        id: product.id,
-        name: product.name,
-        metadata: product.metadata
-      }, null, 2))
+            await stripe.products.createFeature(product.id, {
+              entitlement_feature: featureId
+            })
 
-      // 🆕 NEW: Attach features to the product (FIXED)
-      console.log(`\n🔗 Attaching ${productConfig.features.length} features to ${product.name}...`)
+            console.log(`  ✅ Successfully attached: ${featureLookupKey}`)
 
-      for (const featureLookupKey of productConfig.features) {
-        try {
-          console.log(`  📎 Attaching feature: ${featureLookupKey}`)
+          } catch (featureError) {
+            console.error(`  ❌ Failed to attach feature ${featureLookupKey}:`, featureError.message)
+            
+            if (featureError.message.includes('not found')) {
+              console.error(`  💡 Make sure you've run 'pnpm run create:feat' first!`)
+            }
+          }
+        }
 
-          // 🔧 FIXED: Get the feature ID first
-          const featureId = await getFeatureIdByLookupKey(featureLookupKey)
-          console.log(`  🔍 Found feature ID: ${featureId}`)
+        // Create prices for this product
+        const prices = {}
 
-          // 🔧 FIXED: Use correct parameter name and feature ID
-          await stripe.products.createFeature(product.id, {
-            entitlement_feature: featureId  // Use feature ID, not lookup_key
+        for (const [interval, priceConfig] of Object.entries(productConfig.prices)) {
+          console.log(`\n💰 Creating ${interval} price for ${productConfig.name}...`)
+
+          const price = await stripe.prices.create({
+            product: product.id,
+            unit_amount: priceConfig.amount,
+            currency: currency,
+            recurring: {
+              interval: priceConfig.interval
+            },
+            metadata: {
+              plan: productConfig.metadata.tier,
+              interval: interval,
+              tier: productConfig.metadata.tier
+            }
           })
 
-          console.log(`  ✅ Successfully attached: ${featureLookupKey} (${featureId})`)
-
-        } catch (featureError) {
-          console.error(`  ❌ Failed to attach feature ${featureLookupKey}:`, featureError.message)
-
-          if (featureError.message.includes('not found')) {
-            console.error(`  💡 Make sure you've run 'node scripts/create-features.mjs' first!`)
+          prices[interval] = {
+            id: price.id,
+            amount: priceConfig.amount
           }
+
+          console.log(`✅ Created ${interval} price: ${price.id} (£${(priceConfig.amount / 100).toFixed(2)})`)
         }
-      }
 
-      // Create prices for this product
-      const prices = {}
-
-      for (const [interval, priceConfig] of Object.entries(productConfig.prices)) {
-        console.log(`\n💰 Creating ${interval} price for ${productConfig.name}...`)
-
-        const pricePayload = {
-          product: product.id,
-          unit_amount: priceConfig.amount,
-          currency: currency,
-          recurring: {
-            interval: priceConfig.interval
+        createdProducts.push({
+          product: {
+            id: product.id,
+            name: product.name,
+            tier: productConfig.metadata.tier,
+            features: productConfig.features
           },
-          metadata: {
-            plan: productConfig.metadata.tier,
-            interval: interval,
-            tier: productConfig.metadata.tier
-          }
+          prices
+        })
+
+        // Small delay to avoid rate limits
+        console.log('⏳ Waiting 100ms before next product...')
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+      } catch (createError) {
+        console.error(`❌ Failed to create product '${productConfig.name}':`, createError.message)
+        
+        if (createError.code === 'resource_already_exists') {
+          console.error(`💡 A product with similar properties already exists`)
         }
-
-        console.log('🔍 Price payload:', JSON.stringify(pricePayload, null, 2))
-
-        const price = await stripe.prices.create(pricePayload)
-
-        prices[interval] = {
-          id: price.id,
-          amount: priceConfig.amount
-        }
-
-        console.log(`✅ Created ${interval} price: ${price.id} (£${(priceConfig.amount / 100).toFixed(2)})`)
+        
+        throw createError
       }
-
-      createdProducts.push({
-        product: {
-          id: product.id,
-          name: product.name,
-          tier: productConfig.metadata.tier,
-          features: productConfig.features
-        },
-        prices
-      })
-
-      // Small delay to avoid rate limits
-      console.log('⏳ Waiting 100ms before next product...')
-      await new Promise(resolve => setTimeout(resolve, 100))
     }
 
     // Display summary
     console.log('\n' + '='.repeat(80))
-    console.log('🎉 ALL PRODUCTS CREATED SUCCESSFULLY!')
+    console.log('🎉 PRODUCT CREATION COMPLETE!')
     console.log('='.repeat(80))
 
-    console.log('\n📋 SUMMARY:')
-    createdProducts.forEach(({ product, prices }) => {
-      console.log(`\n${product.name} (${product.tier.toUpperCase()})`)
-      console.log(`  Product ID: ${product.id}`)
-      console.log(`  Features: ${product.features.join(', ')}`)
-      Object.entries(prices).forEach(([interval, price]) => {
-        console.log(`  ${interval.charAt(0).toUpperCase() + interval.slice(1)} Price: ${price.id} (£${(price.amount / 100).toFixed(2)})`)
+    if (createdProducts.length > 0) {
+      console.log(`\n✅ Created ${createdProducts.length} new product(s):`)
+      createdProducts.forEach(({ product, prices }) => {
+        console.log(`  • ${product.name} (${product.tier.toUpperCase()})`)
+        console.log(`    Product ID: ${product.id}`)
+        Object.entries(prices).forEach(([interval, price]) => {
+          console.log(`    ${interval}: ${price.id} (£${(price.amount / 100).toFixed(2)})`)
+        })
       })
-    })
+    }
 
-    console.log('\n💡 NEXT STEPS:')
+    if (skippedProducts.length > 0) {
+      console.log(`\n⚠️  Skipped ${skippedProducts.length} existing active product(s):`)
+      skippedProducts.forEach(({ config, existing }) => {
+        console.log(`  • ${config.name}: ${existing.id} (already exists)`)
+      })
+    }
+
+    if (createdProducts.length === 0 && skippedProducts.length > 0) {
+      console.log('\n💡 All products already exist - nothing to create!')
+    }
+
+    console.log('\n💡 Next Steps:')
     console.log('1. Your products are now live in Stripe with feature entitlements!')
     console.log('2. The checkout page will automatically fetch these products')
     console.log('3. Webhooks will automatically sync feature entitlements')
-    console.log('4. Check your Stripe dashboard to see the products and features')
+    console.log('4. Add more products to CONFIG array and re-run this script anytime')
 
-    // Optional: Generate a quick reference
-    console.log('\n📄 QUICK REFERENCE (for debugging):')
-    const quickRef = createdProducts.reduce((acc, { product, prices }) => {
-      acc[product.tier] = {
-        productId: product.id,
-        features: product.features,
-        monthly: prices.monthly?.id,
-        yearly: prices.yearly?.id
-      }
-      return acc
-    }, {})
-    console.log(JSON.stringify(quickRef, null, 2))
+    console.log('\n📚 About Product IDs:')
+    console.log('• Product IDs are auto-generated by Stripe (cannot be reused)')
+    console.log('• Archived products cannot be reactivated')
+    console.log('• This script checks for existing products by tier metadata')
 
-    // 🆕 NEW: Show entitlements info
-    console.log('\n🎯 ENTITLEMENTS INFO:')
-    console.log('- Features are now attached to products')
-    console.log('- When customers subscribe, they automatically get entitlements')
-    console.log('- Use webhooks to sync entitlements to your database')
-    console.log('- Check entitlements with: stripe.entitlements.active.list({ customer: "cus_..." })')
+    return {
+      created: createdProducts,
+      skipped: skippedProducts
+    }
 
   } catch (error) {
-    console.error('❌ Error creating products:')
+    console.error('\n❌ SCRIPT FAILED:')
     console.error('Error message:', error.message)
     console.error('Error type:', error.type)
     console.error('Error code:', error.code)
-    console.error('Full error:', error)
 
     if (error.type === 'StripeInvalidRequestError') {
-      console.error('🔍 This is likely a validation error with the request payload')
+      console.error('💡 This is likely a validation error with the request payload')
     }
 
     process.exit(1)
