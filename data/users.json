@@ -1,5 +1,89 @@
 {
-  "customers": {},
-  "subscriptions": {},
-  "payments": {}
+  "customers": {
+    "cus_ScwfZdkbCuUEer": {
+      "stripeCustomerId": "cus_ScwfZdkbCuUEer",
+      "email": "clock1@gmail.com",
+      "name": "Clock 1",
+      "metadata": {
+        "plan": "prod_Scvp85X7jSGrWM_month",
+        "product": "Core Tier"
+      },
+      "created": 1751762828,
+      "entitlements": {},
+      "subscription": {
+        "stripeSubscriptionId": "sub_1RhgyxI6x5aPF2SDfuSP2Mj3",
+        "status": "canceled",
+        "canceledAt": 1767923220,
+        "endedAt": 1768700820
+      },
+      "suspensionInfo": {
+        "reason": "payment_failed",
+        "failedInvoiceId": "in_1Rhh1lI6x5aPF2SD1yHHymas",
+        "billingReason": "subscription_cycle",
+        "suspendedAt": "2025-07-06T01:13:56.352Z",
+        "attemptCount": 7,
+        "amountDue": 300
+      },
+      "suspendedEntitlements": {
+        "ent_test_61Sr4wNywUp9Z6kgD41I6x5aPF2SDJlo": {
+          "stripeEntitlementId": "ent_test_61Sr4wNywUp9Z6kgD41I6x5aPF2SDJlo",
+          "featureId": "feat_test_61Sr3v5MaFPMX8Jhs41I6x5aPF2SDNua",
+          "featureLookupKey": "extended_limits",
+          "featureName": "Extended Limits",
+          "status": "active",
+          "metadata": {
+            "created_by": "create-features-script",
+            "created_date": "2025-07-05T23:57:45.506Z",
+            "description": "Higher rate limits and extended functionality",
+            "order": "2"
+          },
+          "updatedAt": "2025-07-06T01:03:10.482Z"
+        },
+        "ent_test_61Sr4wNkCRXT4gFPn41I6x5aPF2SDUbw": {
+          "stripeEntitlementId": "ent_test_61Sr4wNkCRXT4gFPn41I6x5aPF2SDUbw",
+          "featureId": "feat_test_61Sr3v6gANrI6RBCZ41I6x5aPF2SD1rk",
+          "featureLookupKey": "priority_support",
+          "featureName": "Priority Support",
+          "status": "active",
+          "metadata": {
+            "created_by": "create-features-script",
+            "created_date": "2025-07-05T23:57:45.949Z",
+            "description": "Priority customer support and faster response times",
+            "order": "3"
+          },
+          "updatedAt": "2025-07-06T01:03:10.692Z"
+        },
+        "ent_test_61Sr4wNrOTuafBj8341I6x5aPF2SDKtk": {
+          "stripeEntitlementId": "ent_test_61Sr4wNrOTuafBj8341I6x5aPF2SDKtk",
+          "featureId": "feat_test_61Sr3v55bU1AwhVIx41I6x5aPF2SD2Ce",
+          "featureLookupKey": "single_premium_server",
+          "featureName": "Premium Server Access",
+          "status": "active",
+          "metadata": {
+            "created_by": "create-features-script",
+            "created_date": "2025-07-05T23:57:44.909Z",
+            "description": "Access to one premium Discord server",
+            "order": "1"
+          },
+          "updatedAt": "2025-07-06T01:03:10.899Z"
+        },
+        "ent_test_61Sr4wNaa3NwwvgTF41I6x5aPF2SDIoi": {
+          "stripeEntitlementId": "ent_test_61Sr4wNaa3NwwvgTF41I6x5aPF2SDIoi",
+          "featureId": "feat_test_61Sr3v6lo04W8YDXl41I6x5aPF2SDTsO",
+          "featureLookupKey": "credit_shoutout",
+          "featureName": "Credit Shoutout",
+          "status": "active",
+          "metadata": {
+            "created_by": "create-features-script",
+            "created_date": "2025-07-05T23:57:46.449Z",
+            "description": "Your name will be displayed in the credits list",
+            "order": "4"
+          },
+          "updatedAt": "2025-07-06T01:03:11.114Z"
+        }
+      },
+      "updatedAt": "2025-07-06T01:13:56.352Z",
+      "suspended": true
+    }
+  }
 }

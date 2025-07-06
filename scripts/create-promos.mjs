@@ -181,11 +181,6 @@ async function createPromoCodes() {
         console.log('3. Add more codes to CONFIG array and re-run this script anytime')
         console.log('4. Deactivate codes via Stripe Dashboard or API if needed')
 
-        console.log('\n📚 About Promo Codes:')
-        console.log('• Promo codes can be deactivated and reactivated')
-        console.log('• This script will reactivate inactive codes with the same name')
-        console.log('• Each code can only be used once per customer (unless configured otherwise)')
-
         return {
             created: createdCodes,
             reactivated: reactivatedCodes,

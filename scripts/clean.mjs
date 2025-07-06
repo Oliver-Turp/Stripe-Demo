@@ -49,11 +49,60 @@ async function cancelStripeTests() {
     );
 
     if (incompletePaymentIntents.length > 0) {
+      let canceledCount = 0;
+      let voidedInvoiceCount = 0;
+
       for (const paymentIntent of incompletePaymentIntents) {
-        await stripe.paymentIntents.cancel(paymentIntent.id);
-        console.log(`✅ Canceled payment intent: ${paymentIntent.id}`);
+        try {
+          // Try to cancel the payment intent first
+          await stripe.paymentIntents.cancel(paymentIntent.id);
+          console.log(`✅ Canceled payment intent: ${paymentIntent.id}`);
+          canceledCount++;
+
+        } catch (error) {
+          // If it's an invoice-related payment intent, find and void the invoice
+          if (error.message?.includes('cannot cancel PaymentIntents created by invoices')) {
+            console.log(`🔍 Finding invoice for payment intent: ${paymentIntent.id}`);
+
+            try {
+              // Find the invoice associated with this payment intent
+              const invoices = await stripe.invoices.list({
+                customer: paymentIntent.customer,
+                limit: 100,
+              });
+              console.log("invoices", invoices);
+
+              // Look for the invoice that matches this payment intent
+              const associatedInvoice = invoices.data.find(invoice =>
+                invoice.payment_intent === paymentIntent.id
+              );
+
+              if (associatedInvoice) {
+                // Check if invoice can be voided (must be 'open' status)
+                if (associatedInvoice.status === 'open') {
+                  await stripe.invoices.voidInvoice(associatedInvoice.id);
+                  console.log(`✅ Voided associated invoice: ${associatedInvoice.id} for payment intent: ${paymentIntent.id}`);
+                  voidedInvoiceCount++;
+                } else {
+                  console.log(`⏭️  Invoice ${associatedInvoice.id} status is '${associatedInvoice.status}', cannot void`);
+                }
+              } else {
+                console.log(`⚠️  Could not find associated invoice for payment intent: ${paymentIntent.id}`);
+              }
+
+            } catch (invoiceError) {
+              console.log(`⚠️  Error handling invoice for payment intent ${paymentIntent.id}: ${invoiceError.message}`);
+            }
+          } else {
+            // Log other unexpected errors but continue
+            console.log(`⚠️  Could not cancel payment intent ${paymentIntent.id}: ${error.message}`);
+          }
+        }
       }
-      console.log(`🎉 All ${incompletePaymentIntents.length} incomplete payments canceled!`);
+
+      console.log(`🎉 Payment intents cleanup completed!`);
+    } else {
+      console.log('✅ No incomplete payment intents found');
     }
     console.log("Logging out of Stripe...");
   } catch (error) {

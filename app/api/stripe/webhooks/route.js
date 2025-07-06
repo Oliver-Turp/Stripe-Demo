@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe-server'
-import { saveCustomer, saveSubscription, savePayment, saveCustomerEntitlements, suspendCustomerEntitlements } from '@/lib/storage'
+import { saveCustomer, saveCustomerSubscription, saveCustomerEntitlements, suspendCustomerEntitlements } from '@/lib/storage'
 
 export async function POST(request) {
   const body = await request.text()
@@ -18,19 +18,14 @@ export async function POST(request) {
 
   try {
     switch (event.type) {
-      // 🆕 NEW: Entitlement events
-      case 'entitlements.active_entitlement_summary.updated':
-        await handleEntitlementSummaryUpdated(event.data.object)
-        break
-
       case 'customer.created':
       case 'customer.updated':
         const customer = event.data.object
+        console.log("**[customer.created/updated] CUSTOMER OBJECT**", customer);
         await saveCustomer(customer.id, {
           stripeCustomerId: customer.id,
           email: customer.email,
           name: customer.name,
-          metadata: customer.metadata,
           created: customer.created,
         })
         console.log('Customer saved:', customer.id)
@@ -38,51 +33,49 @@ export async function POST(request) {
 
       case 'payment_intent.succeeded':
         const paymentIntentSucceeded = event.data.object
-        await savePayment(paymentIntentSucceeded.id, {
-          stripePaymentIntentId: paymentIntentSucceeded.id,
-          customerId: paymentIntentSucceeded.customer,
-          amount: paymentIntentSucceeded.amount,
-          currency: paymentIntentSucceeded.currency,
-          status: 'succeeded',
-          paymentMethod: paymentIntentSucceeded.payment_method,
-        })
-        console.log('Payment succeeded and saved:', paymentIntentSucceeded.id)
+        // ❌ REMOVED: savePayment call - no longer needed
+        console.log('Payment succeeded:', paymentIntentSucceeded.id)
         break
 
       case 'payment_intent.payment_failed':
         const paymentIntentFailed = event.data.object
-        await savePayment(paymentIntentFailed.id, {
-          stripePaymentIntentId: paymentIntentFailed.id,
-          customerId: paymentIntentFailed.customer,
-          amount: paymentIntentFailed.amount,
-          currency: paymentIntentFailed.currency,
-          status: 'failed',
-          lastPaymentError: paymentIntentFailed.last_payment_error,
-        })
-        console.log('Payment failed and saved:', paymentIntentFailed.id)
+        // ❌ REMOVED: savePayment call - no longer needed
+        console.log('Payment failed:', paymentIntentFailed.id)
         break
 
       case 'invoice.payment_succeeded':
         const invoiceSucceeded = event.data.object
         console.log('Invoice payment succeeded:', invoiceSucceeded.id)
+        console.log('[invoice.payment_succeeded] **INVOICE OBJECT**', invoiceSucceeded);
+
+        // ✅ CORRECT: Get subscription ID from the nested structure
+        const subscriptionId = invoiceSucceeded.parent?.subscription_details?.subscription
 
         // 🔄 RESTORE ACCESS: If this was a subscription invoice, restore access
-        if (invoiceSucceeded.subscription && invoiceSucceeded.customer) {
+        if (subscriptionId && invoiceSucceeded.customer) {
           console.log(`✅ Payment succeeded - restoring access for customer: ${invoiceSucceeded.customer}`)
 
           // Get the subscription to check if it was previously past_due
-          const subscription = await stripe.subscriptions.retrieve(invoiceSucceeded.subscription)
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId)
 
           if (subscription.status === 'active') {
             console.log(`🔓 Restoring entitlements for customer: ${invoiceSucceeded.customer}`)
-            // The entitlements.active_entitlement_summary.updated webhook will handle this automatically
-            // But you could also manually restore access here if needed
-          }
-        }
 
-        // 🧹 CLEANUP: If this is a subscription invoice, clean up other incomplete subscriptions
-        const subscriptionId = invoiceSucceeded.parent?.subscription_details?.subscription
-        if (subscriptionId && invoiceSucceeded.customer) {
+            // ✅ SAVE SUBSCRIPTION DATA ON SUCCESSFUL PAYMENT
+            await saveCustomerSubscription(invoiceSucceeded.customer, {
+              stripeSubscriptionId: subscription.id,
+              status: subscription.status,
+              priceId: subscription.items.data[0]?.price?.id,
+              productId: subscription.items.data[0]?.price?.product,
+              currentPeriodStart: subscription.current_period_start,
+              currentPeriodEnd: subscription.current_period_end,
+              cancelAtPeriodEnd: subscription.cancel_at_period_end,
+              metadata: subscription.metadata,
+            })
+            console.log(`💾 Saved subscription data for customer: ${invoiceSucceeded.customer}`)
+          }
+
+          // 🧹 CLEANUP: Clean up other incomplete subscriptions
           try {
             console.log(`🧹 Cleaning up incomplete subscriptions for customer: ${invoiceSucceeded.customer}`)
             console.log(`✅ Successful subscription: ${subscriptionId}`)
@@ -120,12 +113,106 @@ export async function POST(request) {
             console.error('Error during incomplete subscription cleanup:', cleanupError)
             // Don't fail the webhook if cleanup fails
           }
+
+          // ✅ FIX: Discord logging for subscription
+          try {
+            const customer = await stripe.customers.retrieve(invoiceSucceeded.customer)
+            console.log('[invoice.payment_succeeded] **CUSTOMER OBJECT**', customer)
+
+            // ✅ FIX: Use the correct subscription ID from the nested structure
+            const subscription = await stripe.subscriptions.retrieve(subscriptionId)
+            console.log('[invoice.payment_succeeded] **SUBSCRIPTION OBJECT**', subscription)
+
+            // Get the product name from the subscription
+            const priceId = subscription.items.data[0]?.price?.id
+            const price = await stripe.prices.retrieve(priceId)
+            const product = await stripe.products.retrieve(price.product)
+
+            // ✅ FIX: Update customer metadata to reflect the actual purchased plan
+            await stripe.customers.update(customer.id, {
+              metadata: {
+                plan: `${product.id}_${price.recurring.interval}`,
+                product: product.name
+              }
+            })
+            console.log(`🔄 Updated customer metadata to reflect purchased plan: ${product.name}`)
+
+            await sendDiscordLog({
+              title: '💰 Subscription Payment Succeeded',
+              color: 0x00ff00, // Green
+              fields: [
+                // Row 1: Name and Email (2 columns)
+                {
+                  name: '👤 Customer Name',
+                  value: customer.name || 'Not provided',
+                  inline: true
+                },
+                {
+                  name: '📧 Email',
+                  value: customer.email || 'Unknown',
+                  inline: true
+                },
+
+                // Row 2: Customer ID (full width)
+                {
+                  name: '🆔 Customer ID',
+                  value: `\`${customer.id}\``,
+                  inline: false
+                },
+
+                // Row 3: Plan details
+                {
+                  name: '📦 Plan',
+                  value: product.name || 'Unknown',
+                  inline: true
+                },
+                {
+                  name: '🔄 Cycle',
+                  value: price.recurring.interval === 'month' ? 'Monthly' :
+                    price.recurring.interval === 'year' ? 'Yearly' :
+                      (price.recurring.interval || 'Unknown'),
+                  inline: true
+                },
+                {
+                  name: '💰 Amount',
+                  value: `£${(invoiceSucceeded.amount_paid / 100).toFixed(2)}`,
+                  inline: true
+                },
+
+                // Row 4: Discount (only if exists, full width)
+                ...(subscription.discount?.coupon ? [{
+                  name: '🎟️ Discount Applied',
+                  value: `**${subscription.discount.coupon.name}** - ${subscription.discount.coupon.percent_off
+                    ? `${subscription.discount.coupon.percent_off}% off`
+                    : `£${(subscription.discount.coupon.amount_off / 100).toFixed(2)} off`
+                    }`,
+                  inline: false
+                }] : []),
+
+                // Row 5: Invoice ID (full width)
+                {
+                  name: '🧾 Invoice ID',
+                  value: `\`${invoiceSucceeded.id}\``,
+                  inline: false
+                }
+              ],
+              timestamp: new Date().toISOString()
+            })
+
+          } catch (discordError) {
+            console.error('Discord logging failed for payment succeeded:', discordError.message)
+          }
         } else {
           console.log('Not a subscription invoice or missing customer/subscription info')
+          console.log('Debug info:', {
+            hasSubscriptionId: !!subscriptionId,
+            hasCustomer: !!invoiceSucceeded.customer,
+            parentType: invoiceSucceeded.parent?.type,
+            billingReason: invoiceSucceeded.billing_reason
+          })
         }
         break
 
-      // 🚨 NEW: Handle payment failures - IMMEDIATE LOCKOUT
       case 'invoice.payment_failed':
         const invoiceFailed = event.data.object
         console.log('🚨 Invoice payment failed:', invoiceFailed.id)
@@ -146,8 +233,11 @@ export async function POST(request) {
           invoiceFailed.billing_reason === 'subscription_cycle' ||
           invoiceFailed.billing_reason === 'subscription_update'
 
+        const isInitialPaymentAttempt = invoiceFailed.billing_reason === 'subscription_create' &&
+          invoiceFailed.attempt_count === 0
+
         // Check if this is a subscription invoice
-        if (isSubscriptionInvoice && invoiceFailed.customer) {
+        if (isSubscriptionInvoice && invoiceFailed.customer && !isInitialPaymentAttempt) {
           console.log(`🔒 Payment failed for subscription invoice - suspending access`)
           console.log(`📋 Billing reason: ${invoiceFailed.billing_reason}`)
 
@@ -176,6 +266,28 @@ export async function POST(request) {
             console.error('Error suspending customer access:', suspendError)
             // Don't fail the webhook if suspension fails
           }
+
+          // Discord logging for payment failures
+          try {
+            const customer = await stripe.customers.retrieve(invoiceFailed.customer)
+
+            await sendDiscordLog({
+              title: '🚨 Subscription Payment Failed',
+              color: 0xff0000, // Red
+              fields: [
+                { name: 'Customer', value: customer.email || 'Unknown', inline: true },
+                { name: 'Amount Due', value: `£${(invoiceFailed.amount_due / 100).toFixed(2)}`, inline: true },
+                { name: 'Attempt', value: `${invoiceFailed.attempt_count}`, inline: true },
+                { name: 'Billing Reason', value: invoiceFailed.billing_reason, inline: true },
+                { name: 'Invoice ID', value: invoiceFailed.id, inline: false }
+              ],
+              timestamp: new Date().toISOString()
+            })
+          } catch (discordError) {
+            console.error('Discord logging failed for payment failed:', discordError.message)
+          }
+        } else if (isInitialPaymentAttempt) {
+          console.log('🔍 Skipping suspension for initial payment attempt (likely 3D Secure flow)')
         } else {
           console.log('🔍 Not a subscription invoice or missing customer:', {
             hasSubscription: !!invoiceFailed.subscription,
@@ -199,18 +311,9 @@ export async function POST(request) {
 
       case 'customer.subscription.created':
         const createdSubscription = event.data.object
-        await saveSubscription(createdSubscription.id, {
-          stripeSubscriptionId: createdSubscription.id,
-          customerId: createdSubscription.customer,
-          status: createdSubscription.status,
-          priceId: createdSubscription.items.data[0]?.price?.id,
-          productId: createdSubscription.items.data[0]?.price?.product,
-          currentPeriodStart: createdSubscription.current_period_start,
-          currentPeriodEnd: createdSubscription.current_period_end,
-          cancelAtPeriodEnd: createdSubscription.cancel_at_period_end,
-          metadata: createdSubscription.metadata,
-        })
-        console.log('Subscription created:', createdSubscription.id)
+        // ❌ REMOVED: Don't save subscription data here - wait for payment confirmation
+        console.log('Subscription created (waiting for payment):', createdSubscription.id)
+        console.log('Status:', createdSubscription.status)
         break
 
       case 'customer.subscription.updated':
@@ -222,7 +325,22 @@ export async function POST(request) {
           previousAttributes?.status === 'past_due') {
           console.log(`🎉 Subscription recovered from past_due: ${updatedSubscription.id}`)
           console.log(`🔓 Customer should regain access: ${updatedSubscription.customer}`)
-          // The entitlements webhook will handle restoring access automatically
+
+          // ✅ UPDATE SUBSCRIPTION DATA ON RECOVERY
+          await saveCustomerSubscription(updatedSubscription.customer, {
+            stripeSubscriptionId: updatedSubscription.id,
+            status: updatedSubscription.status,
+            priceId: updatedSubscription.items.data[0]?.price?.id,
+            productId: updatedSubscription.items.data[0]?.price?.product,
+            currentPeriodStart: updatedSubscription.current_period_start,
+            currentPeriodEnd: updatedSubscription.current_period_end,
+            cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+            cancelAt: updatedSubscription.cancel_at,
+            canceledAt: updatedSubscription.canceled_at,
+            pauseCollection: updatedSubscription.pause_collection,
+            metadata: updatedSubscription.metadata,
+          })
+          console.log(`💾 Updated subscription data for recovered customer: ${updatedSubscription.customer}`)
         }
 
         // Check if subscription became past_due
@@ -239,40 +357,175 @@ export async function POST(request) {
           console.log(`📊 Subscription status changed: ${previousAttributes.status} → ${updatedSubscription.status}`)
         }
 
-        await saveSubscription(updatedSubscription.id, {
-          stripeSubscriptionId: updatedSubscription.id,
-          customerId: updatedSubscription.customer,
-          status: updatedSubscription.status,
-          priceId: updatedSubscription.items.data[0]?.price?.id,
-          productId: updatedSubscription.items.data[0]?.price?.product,
-          currentPeriodStart: updatedSubscription.current_period_start,
-          currentPeriodEnd: updatedSubscription.current_period_end,
-          cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
-          cancelAt: updatedSubscription.cancel_at,
-          canceledAt: updatedSubscription.canceled_at,
-          pauseCollection: updatedSubscription.pause_collection,
-          metadata: updatedSubscription.metadata,
-        })
+        // ❌ REMOVED: Don't automatically save all subscription updates - only save on confirmed payments
         console.log('Subscription updated:', updatedSubscription.id)
         break
 
       case 'customer.subscription.deleted':
         const deletedSubscription = event.data.object
-        await saveSubscription(deletedSubscription.id, {
+        console.log("[customer.subscription.deleted] **DELETED SUBSCRIPTION OBJECT**", deletedSubscription);
+
+        // ✅ UPDATED: Use saveCustomerSubscription instead of saveSubscription
+        await saveCustomerSubscription(deletedSubscription.customer, {
           stripeSubscriptionId: deletedSubscription.id,
-          customerId: deletedSubscription.customer,
           status: 'canceled',
           canceledAt: deletedSubscription.canceled_at,
           endedAt: deletedSubscription.ended_at,
         })
         console.log('Subscription canceled/deleted:', deletedSubscription.id)
+
+        // Discord logging
+        try {
+          const customer = await stripe.customers.retrieve(deletedSubscription.customer)
+          const product = await stripe.products.retrieve(deletedSubscription.items.data[0].price.product)
+
+          // Calculate subscription duration
+          const subscriptionDuration = deletedSubscription.ended_at - deletedSubscription.created
+          const durationDays = Math.floor(subscriptionDuration / (24 * 60 * 60))
+
+          // Get cancellation reason
+          const cancellationReason = deletedSubscription.cancellation_details?.reason || 'unknown'
+          const cancellationFeedback = deletedSubscription.cancellation_details?.feedback
+          const cancellationComment = deletedSubscription.cancellation_details?.comment
+
+          // Helper function to format cancellation reasons
+          const formatCancellationReason = (reason) => {
+            const reasonMap = {
+              'cancellation_requested': 'Customer Requested',
+              'payment_failed': 'Payment Failed',
+              'product_discontinued': 'Product Discontinued',
+              'customer_service': 'Customer Service',
+              'unknown': 'Unknown'
+            }
+            return reasonMap[reason] || reason.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+          }
+
+          // Helper function to format feedback
+          const formatFeedback = (feedback) => {
+            const feedbackMap = {
+              'unused': '🚫 Unused',
+              'too_expensive': '💸 Too Expensive',
+              'too_complex': '🤯 Too Complex',
+              'low_quality': '👎 Low Quality',
+              'missing_features': '🔧 Missing Features',
+              'switched_service': '🔄 Switched Service',
+              'customer_service': '📞 Customer Service Issues',
+              'other': '❓ Other'
+            }
+            return feedbackMap[feedback] || (feedback ? feedback.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : null)
+          }
+
+          // Calculate billing cycle info
+          const billingCycle = deletedSubscription.plan?.interval === 'month' ? 'Monthly' : 'Yearly'
+          const planAmount = `£${(deletedSubscription.plan?.amount / 100).toFixed(2)}`
+
+          await sendDiscordLog({
+            title: '❌ Subscription Cancelled',
+            color: 0xff9900, // Orange
+            fields: [
+              // Row 1: Customer Name and Email
+              {
+                name: '👤 Customer Name',
+                value: customer.name || 'Not provided',
+                inline: true
+              },
+              {
+                name: '📧 Email',
+                value: customer.email || 'Unknown',
+                inline: true
+              },
+
+              // Row 2: Customer ID
+              {
+                name: '🆔 Customer ID',
+                value: `\`${customer.id}\``,
+                inline: false
+              },
+
+              // Row 3: Plan details
+              {
+                name: '📦 Plan',
+                value: product.name || 'Unknown',
+                inline: true
+              },
+              {
+                name: '🔄 Cycle',
+                value: billingCycle,
+                inline: true
+              },
+              {
+                name: '💰 Value',
+                value: planAmount,
+                inline: true
+              },
+
+              // Row 4: Duration
+              {
+                name: '⏱️ Subscription Duration',
+                value: `${durationDays} day${durationDays !== 1 ? 's' : ''}`,
+                inline: false
+              },
+
+              // Row 5: Cancellation reason and feedback (combined if both exist)
+              ...(() => {
+                const formattedReason = formatCancellationReason(cancellationReason)
+                const formattedFeedback = formatFeedback(cancellationFeedback)
+
+                // If we have both reason and feedback, combine them intelligently
+                if (cancellationReason !== 'cancellation_requested' && formattedFeedback) {
+                  return [{
+                    name: '❓ Cancellation Details',
+                    value: `**Reason:** ${formattedReason}\n**Feedback:** ${formattedFeedback}`,
+                    inline: false
+                  }]
+                }
+                // If only non-default reason
+                else if (cancellationReason !== 'cancellation_requested') {
+                  return [{
+                    name: '❓ Cancellation Reason',
+                    value: formattedReason,
+                    inline: false
+                  }]
+                }
+                // If only feedback (and reason is default)
+                else if (formattedFeedback) {
+                  return [{
+                    name: '💭 Customer Feedback',
+                    value: formattedFeedback,
+                    inline: false
+                  }]
+                }
+                // Neither - return empty array
+                return []
+              })(),
+
+              // Row 6: Comment (only if exists)
+              ...(cancellationComment ? [{
+                name: '💬 Customer Comment',
+                value: `"${cancellationComment}"`,
+                inline: false
+              }] : []),
+
+              // Row 7: Subscription ID
+              {
+                name: '🔗 Subscription ID',
+                value: `\`${deletedSubscription.id}\``,
+                inline: false
+              }
+            ],
+            timestamp: new Date().toISOString()
+          })
+        } catch (discordError) {
+          console.error('Discord logging failed for subscription deleted:', discordError.message)
+        }
         break
+
 
       case 'customer.subscription.paused':
         const pausedSubscription = event.data.object
-        await saveSubscription(pausedSubscription.id, {
+        // ✅ UPDATED: Use saveCustomerSubscription instead of saveSubscription
+        await saveCustomerSubscription(pausedSubscription.customer, {
           stripeSubscriptionId: pausedSubscription.id,
-          customerId: pausedSubscription.customer,
           status: 'paused',
           pauseCollection: pausedSubscription.pause_collection,
         })
@@ -281,13 +534,17 @@ export async function POST(request) {
 
       case 'customer.subscription.resumed':
         const resumedSubscription = event.data.object
-        await saveSubscription(resumedSubscription.id, {
+        // ✅ UPDATED: Use saveCustomerSubscription instead of saveSubscription
+        await saveCustomerSubscription(resumedSubscription.customer, {
           stripeSubscriptionId: resumedSubscription.id,
-          customerId: resumedSubscription.customer,
           status: resumedSubscription.status,
           pauseCollection: null, // Clear pause when resumed
         })
         console.log('Subscription resumed:', resumedSubscription.id)
+        break
+
+      case 'entitlements.active_entitlement_summary.updated':
+        await handleEntitlementSummaryUpdated(event.data.object)
         break
 
       default:
@@ -369,5 +626,27 @@ async function handleEntitlementSummaryUpdated(entitlementSummary) {
   } catch (error) {
     console.error('Error handling entitlement summary update:', error)
     throw error
+  }
+}
+
+// Discord logging utility
+async function sendDiscordLog(embed) {
+  if (!process.env.DISCORD_WEBHOOK_URL) {
+    return // Skip if no webhook URL configured
+  }
+
+  try {
+    await fetch(process.env.DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        embeds: [embed]
+      })
+    })
+  } catch (error) {
+    console.error('Discord logging failed:', error.message)
+    // Don't throw - we don't want Discord failures to break Stripe processing
   }
 }

@@ -14,7 +14,8 @@
     "create:prod": "node ./scripts/create-products.mjs",
     "create:coup": "node ./scripts/create-coupons.mjs",
     "create:promo": "node ./scripts/create-promos.mjs",
-    "create:all": "node ./scripts/create-features.mjs && node ./scripts/create-products.mjs && node ./scripts/create-coupons.mjs && node ./scripts/create-promos.mjs"
+    "create:logs": "node ./scripts/create-discord.mjs",
+    "create:all": "node ./scripts/create-features.mjs && node ./scripts/create-products.mjs && node ./scripts/create-coupons.mjs && node ./scripts/create-promos.mjs && node ./scripts/create-discord.mjs"
   },
   "keywords": [],
   "author": "",

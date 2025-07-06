@@ -51,6 +51,10 @@ async function wipeStripeEnvironment() {
     console.log('\n📋 STEP 7: Clearing local data file...')
     clearLocalData()
 
+    // Step 8: Clean up Discord webhook
+    console.log('\n📋 STEP 8: Cleaning up Discord webhook...')
+    await cleanupDiscordWebhook()
+
     console.log('\n🎉 COMPLETE WIPE FINISHED!')
     console.log('✨ Your Stripe test environment is now completely clean!')
     console.log('🔄 You can now run:')
@@ -58,6 +62,7 @@ async function wipeStripeEnvironment() {
     console.log('   2. `pnpm run create:prod` to create products')
     console.log('   3. `pnpm run create:coup` to create coupons')
     console.log('   4. `pnpm run create:promo` to create promotion codes')
+    console.log('   5. `pnpm run create:logs` to create a Discord webhook')
 
   } catch (error) {
     console.error('❌ Wipe error:', error.message)
@@ -74,7 +79,7 @@ async function cleanupPromotionCodesAndCoupons() {
       active: true,
       limit: 100
     })
-    
+
     if (promoCodes.data.length > 0) {
       for (const promoCode of promoCodes.data) {
         try {
@@ -88,11 +93,11 @@ async function cleanupPromotionCodesAndCoupons() {
     }
 
     // Step 2: Delete all coupons (this will invalidate any remaining promo codes)
-    console.log('\n🎟️  Deleting coupons...')
+    console.log('🎟️  Deleting coupons...')
     const coupons = await stripe.coupons.list({
       limit: 100
     })
-    
+
     if (coupons.data.length > 0) {
       for (const coupon of coupons.data) {
         try {
@@ -118,7 +123,7 @@ async function cancelAllActiveSubscriptions() {
     status: 'active',
     limit: 100,
   })
-  
+
   if (activeSubscriptions.data.length > 0) {
     for (const subscription of activeSubscriptions.data) {
       try {
@@ -135,7 +140,7 @@ async function cancelAllActiveSubscriptions() {
     status: 'past_due',
     limit: 100,
   })
-  
+
   if (pastDueSubscriptions.data.length > 0) {
     for (const subscription of pastDueSubscriptions.data) {
       try {
@@ -146,13 +151,14 @@ async function cancelAllActiveSubscriptions() {
       }
     }
   }
+  console.log('✅ All active subscriptions canceled')
 }
 
 async function deleteAllCustomers() {
   const customers = await stripe.customers.list({
     limit: 100,
   })
-  
+
   if (customers.data.length > 0) {
     for (const customer of customers.data) {
       try {
@@ -163,13 +169,14 @@ async function deleteAllCustomers() {
       }
     }
   }
+  console.log('✅ All customers deleted')
 }
 
 async function deleteAllProducts() {
   const products = await stripe.products.list({
     limit: 100,
   })
-  
+
   if (products.data.length > 0) {
     for (const product of products.data) {
       try {
@@ -236,7 +243,7 @@ async function deleteAllProducts() {
       }
     }
   }
-    console.log('✅ All products archived (or deleted if possible)')
+  console.log('✅ All products archived (or deleted if possible)')
 }
 
 async function deleteAllFeatures() {
@@ -244,7 +251,7 @@ async function deleteAllFeatures() {
     const features = await stripe.entitlements.features.list({
       limit: 100,
     })
-    
+
     if (features.data.length === 0) {
       console.log('✅ No features to delete')
       return
@@ -259,7 +266,7 @@ async function deleteAllFeatures() {
           active: false
         })
         archivedCount++
-        
+
         // Small delay to avoid rate limits
         await new Promise(resolve => setTimeout(resolve, 100))
       } catch (err) {
@@ -282,8 +289,6 @@ function clearLocalData() {
     const dataPath = path.join(process.cwd(), 'data', 'users.json')
     const emptyData = {
       customers: {},
-      subscriptions: {},
-      payments: {}
     }
     fs.writeFileSync(dataPath, JSON.stringify(emptyData, null, 2))
     console.log('✅ Cleared local data file')
@@ -291,6 +296,73 @@ function clearLocalData() {
     console.log(`⚠️  Could not clear local data: ${error.message}`)
   }
 }
+
+async function cleanupDiscordWebhook() {
+  try {
+    if (!process.env.DISCORD_BOT_TOKEN || !process.env.STRIPE_LOG_CHANNEL_ID) {
+      console.log('⚠️  Discord environment variables not found, skipping webhook cleanup')
+      return
+    }
+
+    console.log('🔍 Looking for Stripe webhooks to delete...')
+
+    // Get all webhooks for the channel
+    const response = await fetch(
+      `https://discord.com/api/v10/channels/${process.env.STRIPE_LOG_CHANNEL_ID}/webhooks`,
+      {
+        headers: {
+          'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    )
+
+    if (!response.ok) {
+      console.log(`⚠️  Could not fetch Discord webhooks: ${response.status} ${response.statusText}`)
+      return
+    }
+
+    const webhooks = await response.json()
+
+    // Find and delete Stripe-related webhooks
+    const stripeWebhooks = webhooks.filter(webhook =>
+      webhook.name === 'Stripe Events' || webhook.name.includes('Stripe')
+    )
+
+    if (stripeWebhooks.length === 0) {
+      console.log('✅ No Stripe webhooks found to delete')
+      return
+    }
+
+    for (const webhook of stripeWebhooks) {
+      try {
+        const deleteResponse = await fetch(
+          `https://discord.com/api/v10/webhooks/${webhook.id}`,
+          {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}`,
+            },
+          }
+        )
+
+        if (deleteResponse.ok) {
+          console.log(`🗑️  Deleted Discord webhook: ${webhook.name} (${webhook.id})`)
+        } else {
+          console.log(`⚠️  Could not delete webhook ${webhook.id}: ${deleteResponse.status} ${deleteResponse.statusText}`)
+        }
+      } catch (err) {
+        console.log(`⚠️  Error deleting webhook ${webhook.id}: ${err.message}`)
+      }
+    }
+
+    console.log('✅ Discord webhook cleanup completed')
+
+  } catch (error) {
+    console.log(`⚠️  Error during Discord webhook cleanup: ${error.message}`)
+  }
+}
+
 
 // Confirmation prompt with countdown
 console.log('🚨 WARNING: This will completely wipe your Stripe test environment!')
@@ -313,7 +385,7 @@ let countdown = 5
 const countdownInterval = setInterval(() => {
   process.stdout.write(`\r⏰ Starting wipe in ${countdown} seconds...`)
   countdown--
-  
+
   if (countdown < 0) {
     clearInterval(countdownInterval)
     process.stdout.write('\r⏰ Starting wipe now...           \n') // Clear the line and add newline
